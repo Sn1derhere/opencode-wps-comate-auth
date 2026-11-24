@@ -1,0 +1,36 @@
+{
+  "name": "opencode-wps-comate-auth",
+  "version": "0.1.0",
+  "description": "Unofficial WPS Comate provider plugin for magpie",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": [
+    "index.mjs"
+  ],
+  "keywords": [
+    "opencode-plugin",
+    "magpie",
+    "wps",
+    "comate"
+  ],
+  "license": "MIT",
+  "magpie": {
+    "maxConcurrency": 2,
+    "name": "WPS Comate",
+    "summary": {
+      "en": "Connect your WPS Comate account to magpie.",
+      "zh": "在 magpie 中使用自己的 WPS Comate 账号。"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Sn1derhere/opencode-wps-comate-auth.git"
+  },
+  "homepage": "https://github.com/Sn1derhere/opencode-wps-comate-auth#readme",
+  "bugs": {
+    "url": "https://github.com/Sn1derhere/opencode-wps-comate-auth/issues"
+  },
+  "scripts": {
+    "test": "node --test test/plugin.test.mjs"
+  }
+}
