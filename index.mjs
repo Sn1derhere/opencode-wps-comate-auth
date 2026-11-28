@@ -232,6 +232,75 @@ function toModel(entry, base, index) {
 }
 
 // ---------------------------------------------------------------------------
+// [兼容补丁] Comate 的 Go 解析层消化不了 Codex 发的部分工具 schema：
+//   - enum 解析成 []string，布尔枚举（如 tool_search 加载的 create_worktree
+//     的 allowAsync: enum [true]）直接 502
+//   - type 解析成 string，["string","null"] 数组类型直接 502
+// 只做这两类规整（anyOf 联合是合法 JSON Schema，实测可过，不碰）：
+// 布尔/数字枚举删掉并把允许值挪进 description；type 数组取首个非 null
+// 字符串类型。没有任何改动时不重序列化（请求字节级原样，不影响 zcode 等
+// 其他调用方）；异常时原样转发（fail-open）。
+// ---------------------------------------------------------------------------
+
+function sanitizeToolSchemas(text) {
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  let changed = false;
+  const note = (node, extra) => {
+    node.description =
+      typeof node.description === "string" && node.description
+        ? `${node.description} ${extra}`
+        : extra;
+  };
+  // 结构化递归：只沿 schema 结构（properties/items/anyOf/oneOf/allOf/
+  // additionalProperties/$defs）下行，避免把 properties 的键名误读成字段
+  const walkSchema = (node) => {
+    if (!node || typeof node !== "object" || Array.isArray(node)) return;
+    if (node.enum !== undefined) {
+      const values = Array.isArray(node.enum) ? node.enum : [node.enum];
+      if (values.some((v) => typeof v !== "string")) {
+        const allowed = values.map((v) => (typeof v === "string" ? JSON.stringify(v) : String(v))).join(", ");
+        note(node, `(allowed values: ${allowed})`);
+        delete node.enum;
+        changed = true;
+      }
+    }
+    if (Array.isArray(node.type)) {
+      if (node.type.includes("null")) note(node, "(nullable)");
+      node.type = node.type.find((t) => typeof t === "string" && t !== "null") ?? "string";
+      changed = true;
+    }
+    if (node.type === undefined && Array.isArray(node.enum)) {
+      node.type = "string";
+      changed = true;
+    }
+    if (node.properties && typeof node.properties === "object" && !Array.isArray(node.properties))
+      for (const k of Object.keys(node.properties)) walkSchema(node.properties[k]);
+    if (node.items) walkSchema(node.items);
+    for (const k of ["anyOf", "oneOf", "allOf"]) if (Array.isArray(node[k])) node[k].forEach(walkSchema);
+    if (node.additionalProperties && typeof node.additionalProperties === "object" && !Array.isArray(node.additionalProperties))
+      walkSchema(node.additionalProperties);
+    if (node.$defs && typeof node.$defs === "object" && !Array.isArray(node.$defs))
+      for (const k of Object.keys(node.$defs)) walkSchema(node.$defs[k]);
+  };
+  try {
+    for (const tool of body?.tools ?? []) {
+      if (!tool || typeof tool !== "object") continue;
+      for (const sub of Array.isArray(tool.tools) ? tool.tools : [tool]) {
+        walkSchema(sub?.parameters ?? sub?.function?.parameters);
+      }
+    }
+  } catch {
+    return null; // 结构意外：原样转发
+  }
+  return changed ? JSON.stringify(body) : null;
+}
+
+// ---------------------------------------------------------------------------
 // 插件
 // ---------------------------------------------------------------------------
 
@@ -306,6 +375,11 @@ export const WpsComateAuthPlugin = async ({ client } = {}, options) => {
             const request = input instanceof Request ? input : undefined;
             const url = URL.parse(request?.url ?? input);
             if (url?.href !== CHAT_URL) throw new Error("Comate 对话请求地址不受支持");
+            // [兼容补丁] 规整工具 schema；无改动时请求保持字节级原样（网关以 URL+init.body 形式调用本插件）
+            if (typeof init?.body === "string") {
+              const patched = sanitizeToolSchemas(init.body);
+              if (patched !== null) init = { ...init, body: patched };
+            }
             try {
               const response = await fetch(request ?? CHAT_URL, {
                 ...init,
@@ -447,6 +521,7 @@ export const _internal = {
   slugOf,
   toModel,
   mapUsage,
+  sanitizeToolSchemas,
   PROVIDER,
   API_BASE,
   FALLBACK_MODELS,
