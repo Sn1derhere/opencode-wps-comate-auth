@@ -232,6 +232,49 @@ function toModel(entry, base, index) {
 }
 
 // ---------------------------------------------------------------------------
+// [本地补丁] 工具 schema 兼容：Comate 的 Go 后端把 enum 解析成 []string，
+// 工具参数里的布尔/数字枚举会让请求 502
+// （json: cannot unmarshal bool into ... enum of type string）。
+// 典型来源：Codex 桌面版 tool_search 加载的 create_worktree（allowAsync: enum [true]）。
+// 处理：只删含非字符串成员的 enum，允许值挪进 description 保留约束语义；
+// 字符串枚举不动；没有任何删除时不重序列化（字节级原样）；异常时原样转发（fail-open）。
+// ---------------------------------------------------------------------------
+
+function sanitizeToolSchemas(text) {
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return null; // 非 JSON，原样转发
+  }
+  let changed = false;
+  const walk = (node) => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node.enum) && node.enum.some((v) => typeof v !== "string")) {
+      const allowed = node.enum
+        .map((v) => (typeof v === "string" ? JSON.stringify(v) : String(v)))
+        .join(", ");
+      const note = `(allowed values: ${allowed})`;
+      node.description =
+        typeof node.description === "string" && node.description
+          ? `${node.description} ${note}`
+          : note;
+      delete node.enum;
+      changed = true;
+    }
+    for (const key of Object.keys(node)) walk(node[key]);
+  };
+  try {
+    for (const tool of body?.tools ?? []) {
+      walk(tool?.function?.parameters ?? tool?.parameters);
+    }
+  } catch {
+    return null; // 结构意外：原样转发
+  }
+  return changed ? JSON.stringify(body) : null;
+}
+
+// ---------------------------------------------------------------------------
 // 插件
 // ---------------------------------------------------------------------------
 
@@ -306,10 +349,30 @@ export const WpsComateAuthPlugin = async ({ client } = {}, options) => {
             const request = input instanceof Request ? input : undefined;
             const url = URL.parse(request?.url ?? input);
             if (url?.href !== CHAT_URL) throw new Error("Comate 对话请求地址不受支持");
+            // [本地补丁] 清洗工具 schema；没有改动时保持请求字节级原样
+            let outbound = request ?? CHAT_URL;
+            let outboundInit = init;
             try {
-              const response = await fetch(request ?? CHAT_URL, {
-                ...init,
-                headers: buildHeaders(cookie, init?.headers ?? request?.headers),
+              if (request && /^post$/i.test(request.method)) {
+                const raw = await request.text();
+                const patched = sanitizeToolSchemas(raw);
+                outbound = new Request(url, {
+                  method: request.method,
+                  body: patched ?? raw,
+                  duplex: "half",
+                });
+                outboundInit = { ...init, body: undefined };
+              } else if (!request && typeof init?.body === "string") {
+                const patched = sanitizeToolSchemas(init.body);
+                if (patched !== null) outboundInit = { ...init, body: patched };
+              }
+            } catch {
+              // 读体/重建失败：维持原样转发
+            }
+            try {
+              const response = await fetch(outbound, {
+                ...outboundInit,
+                headers: buildHeaders(cookie, outboundInit?.headers ?? request?.headers),
                 redirect: "error",
                 proxy: proxyOf(opts),
               });
@@ -447,6 +510,7 @@ export const _internal = {
   slugOf,
   toModel,
   mapUsage,
+  sanitizeToolSchemas,
   PROVIDER,
   API_BASE,
   FALLBACK_MODELS,
