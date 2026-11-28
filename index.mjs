@@ -250,23 +250,26 @@ function sanitizeToolSchemas(text) {
   let changed = false;
   const walk = (node) => {
     if (!node || typeof node !== "object") return;
-    if (Array.isArray(node.enum) && node.enum.some((v) => typeof v !== "string")) {
-      const allowed = node.enum
-        .map((v) => (typeof v === "string" ? JSON.stringify(v) : String(v)))
-        .join(", ");
-      const note = `(allowed values: ${allowed})`;
-      node.description =
-        typeof node.description === "string" && node.description
-          ? `${node.description} ${note}`
-          : note;
-      delete node.enum;
-      changed = true;
+    if (node.enum !== undefined) {
+      const values = Array.isArray(node.enum) ? node.enum : [node.enum];
+      if (values.some((v) => typeof v !== "string")) {
+        const allowed = values
+          .map((v) => (typeof v === "string" ? JSON.stringify(v) : String(v)))
+          .join(", ");
+        const note = `(allowed values: ${allowed})`;
+        node.description =
+          typeof node.description === "string" && node.description
+            ? `${node.description} ${note}`
+            : note;
+        delete node.enum;
+        changed = true;
+      }
     }
     for (const key of Object.keys(node)) walk(node[key]);
   };
   try {
     for (const tool of body?.tools ?? []) {
-      walk(tool?.function?.parameters ?? tool?.parameters);
+      walk(tool); // 整个工具对象：覆盖 function.parameters、namespace 嵌套子工具、$defs 等任意位置
     }
   } catch {
     return null; // 结构意外：原样转发
